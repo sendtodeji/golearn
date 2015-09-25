@@ -1,0 +1,122 @@
+#!/bin/bash 
+clear
+echo "Making VM"
+
+HOSTIP="192.168.1.125"
+
+CMD="qemu-kvm -enable-kvm -vga std -cpu host "
+
+read -p "VM Name: " vmname
+read -p "Memory Size (K,G,M): " vmmem
+read -p "Disk Size (K, G, M): " vmdsksz
+
+disktype="inv"
+VALID_TYPES="qcow2 qcow raw vdi vhd"
+while [ $( echo $VALID_TYPES | grep -c $disktype) -eq 0 ]; do
+  read -p "Select Disk Type (qcow2,qcow,raw,vdi): " disktype
+  disktype=$(echo $disktype | tr [A-Z] [a-z])
+  if [ "$disktype" = "raw" ]; then 
+ 	disktype="img"
+  fi
+done
+
+# Begin Networking 
+
+read -p "Network Type (nat,bridge): " vmnet
+
+
+# Begin MAC Assignment
+
+MACADDR=$(printf '52:54:00:EF:%02X:%02X\n' $((RANDOM%256)) $((RANDOM%256)))
+
+if [ "$vmnet" = "bridge" ]; then
+   AV_INTF=$(brctl show | grep '^\w'  | grep -v "bridge name" | awk '{print $1 }')
+   read -p "Which bridge: (${AV_INTF})" intf
+	
+   NET="-net nic,model=rtl8139,macaddr=${MACADDR} -net bridge,br=${intf} " 
+else
+   NET="-net nic,model=rtl8139,macaddr=${MACADDR} -net user "
+fi
+
+# End MAC Assignment
+
+# End Networking
+
+read -p "VM Path: " vmpath
+read -p "Specify VM Template: " template
+if [ -z "$vmpath" ]; then
+  vmpath="/container/storage/kvm"
+
+ if [ -z "$template" ]
+ then
+    vmtemplate="$vmpath/vmtemplate.qcow2"
+ else
+    vmtemplate=$template
+ fi
+
+  if [ ! -d "${vmpath}/${vmname}" ]; then
+	mkdir -p ${vmpath}/${vmname}
+	vmpath="${vmpath}/${vmname}"
+  fi
+fi
+
+# Set Display Server
+
+read -p "Display Server (vnc,spice): " vmdisp
+read -p "Display Port: " vmdispport
+
+vmdisp=$(echo $vmdisp | tr [A-Z] [a-z])
+
+
+if [ "$vmdisp" = "spice" ]; then
+  DISP="-spice addr=$port,disable-ticketing,"
+  rmtview="remote-viewer spice://$HOSTIP:$vmdispport &"
+else
+  DISP="-vnc :${vmdispport:2}"
+  rmtview="vncviewer $HOSTIP:$vmdispport &"
+fi
+
+read -p "Create VM ?: " resp
+
+if [ "$resp" != "y" ];then
+  exit
+fi
+
+echo "*** Creating  VM $vmname *** "
+
+if [ -z "$vmdsksz" ]; then
+  vmdsksz="10G"
+fi
+
+vmtempext=${vmtemplate#*.}
+if [ "$vmtempext" = "img" ]; then
+   vmtempext="raw"
+fi
+  if [ "$disktype" !=  "$vmtempext" ]; then
+     qemu-img convert -f ${vmtempext} -O ${disktype} ${vmtemplate} $vmpath/$vmname.${disktype} $vmdsksz
+     
+  else
+    cp $vmtemplate $vmpath/${vmname}.${disktype}
+#    qemu-img resize $vmpath/${vmname}.${disktype} $vmdsksz
+  fi
+  qemu-img resize $vmpath/${vmname}.${disktype} $vmdsksz
+
+  #echo "qemu-img create -f ${disktype} ${vmpath}/${vmname}.${disktype}"
+launcher=${vmpath}/${vmname}.sh
+
+resp=$(echo $resp | tr [A-Z] [a-z])
+
+
+echo "#!/bin/bash" > $launcher
+
+echo "$CMD -name ${vmname} -m ${vmmem} -drive file=${vmpath}/${vmname}.${disktype},format=${disktype} $DISP  ${NET} &" >> $launcher
+echo "echo '$rmtview'" >> $launcher
+
+chmod u+x $launcher
+
+read -p "Launch VM $vmname ?" resp
+
+resp=$(echo $resp | tr [A-Z] [a-z])
+if [ "$resp" = "y" ]; then
+  $launcher
+fi
